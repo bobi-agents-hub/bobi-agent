@@ -220,11 +220,15 @@ jobs:
         working-directory: event-server
         run: npm run smoke -w core
 
-      # The build gate accepts any Node 20+ host (#857). The bundle is esbuild's
-      # output - a pinned native binary emitting an explicit --target=node20 -
-      # so the host Node major cannot reach its bytes. The manifest does not
-      # compare tools.node, so this real-wheel rebuild guards that invariant.
-      # It runs last because it repoints the job's Node off the release major.
+      # The build gate accepts any Node 20+ host (#857). That is only sound
+      # because the bundle is esbuild's output - a pinned native binary emitting
+      # an explicit --target=node20 - so the host Node major cannot reach its
+      # bytes. Nothing enforces that at install time (the manifest records
+      # tools.node but never compares it), so it is enforced here, and it is
+      # enforced through a real wheel build rather than a bare esbuild run: that
+      # is the path #857 unblocked, and the only one that exercises the build
+      # gate, the sanitized child environment, and the metafile audit.
+      # Runs last, since it repoints the job's Node off the release major.
       - uses: actions/setup-node@v5
         with:
           node-version: "24"
