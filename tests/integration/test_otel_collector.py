@@ -22,7 +22,6 @@ from __future__ import annotations
 import os
 import re
 import shutil
-import socket
 import subprocess
 import sys
 import time
@@ -142,16 +141,29 @@ class _Collector:
 
 
 def _await_listening(port: int, proc: subprocess.Popen, timeout: float = 60.0) -> None:
+    """Wait for the OTLP HTTP receiver to actually serve requests.
+
+    A bare TCP connect only proves the port is accepting connections, not
+    that otelcol's HTTP pipeline has finished initializing - the collector
+    (especially the containerized one) can accept a connection and then
+    RST it while still starting up. Retrying a real HTTP request until one
+    completes closes that race: it does not return until the receiver is
+    genuinely ready to handle a POST.
+    """
+    import httpx
+
     deadline = time.monotonic() + timeout
+    endpoint = f"http://127.0.0.1:{port}/v1/metrics"
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             raise AssertionError(f"collector exited early with {proc.returncode}")
-        with socket.socket() as s:
-            s.settimeout(0.5)
-            if s.connect_ex(("127.0.0.1", port)) == 0:
-                return
-        time.sleep(0.2)
-    raise AssertionError(f"collector did not listen on {port} within {timeout}s")
+        try:
+            httpx.post(endpoint, content=b"", timeout=1.0)
+        except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError):
+            time.sleep(0.2)
+            continue
+        return
+    raise AssertionError(f"collector did not become ready on {port} within {timeout}s")
 
 
 @pytest.fixture(scope="module")
