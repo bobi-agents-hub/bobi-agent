@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from bobi import http as pooled, paths
+from bobi.events.protocol import EVENT_PROTOCOL
 from bobi.events.state import bubble_state_path, session_cursor_path
 from bobi.subagent import _start_event_subscription
 
@@ -88,7 +89,10 @@ def test_saved_identity_survives_sync_and_recovers(tmp_path, caplog, endpoint, f
     assert {p: p.read_bytes() for p in before} == before
     assert bubble.exists() == (bubble_contents is not None)
     assert all(r.method == "PUT" and r.url.path == "/deployments/dep-old/subscriptions" for r in captured)
-    assert all(json.loads(r.content) == {"replace": ["inbox/sess"]} for r in captured)
+    assert all(
+        json.loads(r.content) == {"replace": ["inbox/sess"], "protocol": EVENT_PROTOCOL}
+        for r in captured
+    )
     assert "secret" not in caplog.text
 
 

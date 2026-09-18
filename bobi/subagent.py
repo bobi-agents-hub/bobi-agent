@@ -1682,6 +1682,12 @@ def _start_event_subscription(session_name: str, subscribe: list[str],
         register_whatsapp_numbers, register_discord_apps, authorize_resources,
         local_port_from_url, BubbleRejected,
     )
+    from bobi.events.protocol import (
+        EventProtocolError,
+        protocol_payload,
+        raise_for_protocol_error,
+        validate_server_response,
+    )
 
     cfg = Config.load(project_path)
     es_url = cfg.event_server_url
@@ -1769,6 +1775,8 @@ def _start_event_subscription(session_name: str, subscribe: list[str],
                 # cursor would skip or mis-replay events on first connect.
                 cursor_path.unlink(missing_ok=True)
                 return dep, key
+            except EventProtocolError:
+                raise
             except Exception as e:
                 last_err = e
                 if attempt < attempts - 1:
@@ -1817,23 +1825,12 @@ def _start_event_subscription(session_name: str, subscribe: list[str],
         except Exception:
             log.info("Pre-PUT resource authorization unavailable; keeping configured topics")
             authorized = subscribe
-        from bobi import http as pooled
         try:
-            resp = pooled.put(
-                f"{es_url}/deployments/{dep}/subscriptions",
-                json={"replace": authorized},
-                headers={
-                    "Authorization": f"Bearer {key}",
-                    "Content-Type": "application/json",
-                },
-                timeout=10.0,
-            )
-            resp.raise_for_status()
-            reply = resp.json()
-            if not isinstance(reply, dict) or "error" in reply:
-                raise ValueError("Unexpected subscription reply")
+            _put_subscriptions(dep, key, authorized)
             active_subscriptions = list(authorized)
             return dep, key
+        except EventProtocolError:
+            raise
         except Exception as e:
             import httpx
 
@@ -1863,6 +1860,28 @@ def _start_event_subscription(session_name: str, subscribe: list[str],
             # The startup caller logs tracebacks. Suppress the original HTTP
             # exception, whose URL/body can contain credentials or payloads.
             raise RuntimeError(message) from None
+
+    def _put_subscriptions(dep: str, key: str, subscriptions: list[str]) -> None:
+        from bobi import http as pooled
+
+        resp = pooled.put(
+            f"{es_url}/deployments/{dep}/subscriptions",
+            json={"replace": subscriptions, "protocol": protocol_payload()},
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+            timeout=10.0,
+        )
+        try:
+            data = resp.json()
+        except ValueError:
+            data = None
+        raise_for_protocol_error(resp.status_code, data)
+        resp.raise_for_status()
+        if not isinstance(data, dict) or "error" in data:
+            raise ValueError("Unexpected subscription reply")
+        validate_server_response(data)
 
     if not es_url:
         es_url = "http://localhost:8080"
@@ -1898,16 +1917,7 @@ def _start_event_subscription(session_name: str, subscribe: list[str],
         dropped from the index during a long redeploy gap) by re-adding every
         key. Idempotent — the server dedups keys already present (#425).
         """
-        from bobi import http as pooled
-        pooled.put(
-            f"{es_url}/deployments/{es_deployment}/subscriptions",
-            json={"replace": active_subscriptions},
-            headers={
-                "Authorization": f"Bearer {es_key}",
-                "Content-Type": "application/json",
-            },
-            timeout=10.0,
-        )
+        _put_subscriptions(es_deployment, es_key, active_subscriptions)
 
     client = EventServerClient(
         server_url=es_url,
